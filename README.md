@@ -1,9 +1,15 @@
-# Cowrie Honeypot — Analisis de intentos de Ataque a un Servidor
+# Cowrie Honeypot — Ataques reales a un servidor ¿Como lo hacen?
 
-Proyecto de despliegue de un honeypot SSH/Telnet en AWS para capturar,
+Este proyecto se divide en dos partes:
+
+Primero se explica el despliegue de un honeypot usando SSH/Telnet en AWS, usando Cowrie.
+Este despliegue se hace con el fin de capturar,
 almacenar y analizar tráfico de ataque real proveniente de internet: intentos
 de fuerza bruta, comandos ejecutados por atacantes/bots tras el login, y
 malware distribuido durante los ataques.
+
+Luego, se crea una base de datos en SQL, esta recibe los datos directo desde los LOGS obtenidos de los intentos de ataque
+y, a partir de estos datos, se hace el analisis con Python.
 
 ## ¿Qué es un honeypot?
 
@@ -40,7 +46,7 @@ Internet
 [ Análisis: consultas SQL + Python (pandas, geolocalización) ]
 ```
 
-El acceso administrativo real a la instancia se movió del puerto 22 a un
+El acceso administrativo real a la instancia de Ubuntu server, se movió del puerto 22 a un
 puerto no estándar, quedando reservado exclusivamente a mi IP — todo el
 tráfico al puerto 22/23 "público" es interceptado por Cowrie, nunca llega
 al SSH real del sistema.
