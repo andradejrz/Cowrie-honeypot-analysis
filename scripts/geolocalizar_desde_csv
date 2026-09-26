@@ -1,0 +1,155 @@
+"""
+Geolocalización de IPs de ataques capturados por Cowrie honeypot.
+Versión adaptada para leer directamente desde un CSV ya exportado
+(en vez de conectarse a MySQL).
+
+Requisitos:
+    pip install pandas requests folium
+
+Uso:
+    python geolocalizar_desde_csv.py ips_backup.csv
+
+El CSV debe tener al menos una columna 'ip'. Si además tiene una columna
+'intentos' (cantidad de veces que se conectó esa IP), se usa para el tamaño
+de los puntos en el mapa; si no existe, se asume 1 intento por IP.
+"""
+
+import sys
+import time
+import requests
+import pandas as pd
+import folium
+from folium.plugins import MarkerCluster
+
+BATCH_SIZE = 100          # ip-api.com permite hasta 100 IPs por request batch
+SLEEP_BETWEEN_BATCHES = 2 # segundos, para respetar el límite gratuito (45 req/min)
+
+# =========================================================
+# 1. CARGAR IPs DESDE EL CSV
+# =========================================================
+def cargar_ips(path_csv):
+    df = pd.read_csv(path_csv)
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    if "ip" not in df.columns:
+        raise ValueError(f"El CSV debe tener una columna 'ip'. Columnas encontradas: {list(df.columns)}")
+
+    if "intentos" not in df.columns:
+        print("No se encontró columna 'intentos', se asumirá 1 por IP.")
+        df["intentos"] = 1
+
+    df = df.dropna(subset=["ip"]).drop_duplicates(subset=["ip"])
+    print(f"IPs únicas cargadas: {len(df)}")
+    return df[["ip", "intentos"]]
+
+
+# =========================================================
+# 2. GEOLOCALIZAR EN LOTES USANDO ip-api.com (BATCH ENDPOINT)
+# =========================================================
+def geolocalizar_ips(lista_ips):
+    resultados = []
+    url = "http://ip-api.com/batch"
+
+    for i in range(0, len(lista_ips), BATCH_SIZE):
+        lote = lista_ips[i : i + BATCH_SIZE]
+        payload = [
+            {"query": ip, "fields": "status,country,countryCode,city,lat,lon,isp,query"}
+            for ip in lote
+        ]
+
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            resp.raise_for_status()
+            resultados.extend(resp.json())
+        except Exception as e:
+            print(f"Error geolocalizando lote {i}-{i+len(lote)}: {e}")
+
+        print(f"Procesadas {min(i + BATCH_SIZE, len(lista_ips))}/{len(lista_ips)} IPs...")
+        time.sleep(SLEEP_BETWEEN_BATCHES)
+
+    return pd.DataFrame(resultados)
+
+
+# =========================================================
+# 3. GENERAR MAPA INTERACTIVO
+# =========================================================
+def generar_mapa(df_final, archivo_salida="mapa_ataques.html"):
+    df_validos = df_final[df_final["status"] == "success"].dropna(subset=["lat", "lon"])
+
+    if df_validos.empty:
+        print("No hay coordenadas válidas para graficar.")
+        return
+
+    mapa = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
+    cluster = MarkerCluster().add_to(mapa)
+
+    for _, row in df_validos.iterrows():
+        popup_text = (
+            f"<b>IP:</b> {row['query']}<br>"
+            f"<b>País:</b> {row.get('country', 'N/A')}<br>"
+            f"<b>Ciudad:</b> {row.get('city', 'N/A')}<br>"
+            f"<b>ISP:</b> {row.get('isp', 'N/A')}<br>"
+            f"<b>Intentos:</b> {row.get('intentos', 'N/A')}"
+        )
+        folium.CircleMarker(
+            location=[row["lat"], row["lon"]],
+            radius=4 + min(row.get("intentos", 1) / 5, 15),
+            popup=folium.Popup(popup_text, max_width=250),
+            color="#ff4444",
+            fill=True,
+            fill_color="#ff4444",
+            fill_opacity=0.6,
+        ).add_to(cluster)
+
+    mapa.save(archivo_salida)
+    print(f"\nMapa guardado en: {archivo_salida}")
+
+
+# =========================================================
+# 4. RANKING DE PAÍSES
+# =========================================================
+def ranking_paises(df_final, top_n=15):
+    df_validos = df_final[df_final["status"] == "success"]
+    ranking = (
+        df_validos.groupby("country")["intentos"]
+        .sum()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    print(f"\n=== TOP {top_n} PAÍSES DE ORIGEN DE ATAQUES ===")
+    print(ranking.head(top_n).to_string(index=False))
+    return ranking
+
+
+# =========================================================
+# MAIN
+# =========================================================
+def main():
+    if len(sys.argv) < 2:
+        print("Uso: python geolocalizar_desde_csv.py <archivo_ips.csv>")
+        sys.exit(1)
+
+    path_csv = sys.argv[1]
+
+    print("1. Cargando IPs desde el CSV...")
+    df_ips = cargar_ips(path_csv)
+
+    print("\n2. Geolocalizando IPs (puede tardar según la cantidad)...")
+    df_geo = geolocalizar_ips(df_ips["ip"].tolist())
+
+    df_final = df_geo.merge(df_ips, left_on="query", right_on="ip", how="left")
+
+    df_final.to_csv("ataques_geolocalizados.csv", index=False)
+    print("\nCSV guardado: ataques_geolocalizados.csv")
+
+    print("\n3. Ranking de países...")
+    ranking_paises(df_final)
+
+    print("\n4. Generando mapa interactivo...")
+    generar_mapa(df_final)
+
+    print("\n¡Listo! Abre 'mapa_ataques.html' en tu navegador.")
+
+
+if __name__ == "__main__":
+    main()
